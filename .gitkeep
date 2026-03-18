@@ -1,0 +1,418 @@
+import { useState, useEffect } from “react”;
+
+const EMPTY_DATA = {
+payPeriodStart: “”,
+payPeriodEnd: “”,
+nextPayday: “”,
+incomes: [],
+bills: [],
+expenses: [],
+debts: [],
+pastPeriods: [],
+};
+
+// ── Helpers ──
+
+function getDaysLeft(e) { if (!e) return 14; return Math.max(Math.ceil((new Date(e+“T23:59:59”)-new Date())/86400000),1); }
+function getDaysElapsed(s) { if (!s) return 0; return Math.max(Math.floor((new Date()-new Date(s+“T00:00:00”))/86400000),0); }
+function getTotalDays(s,e) { if (!s||!e) return 14; return Math.ceil((new Date(e+“T23:59:59”)-new Date(s+“T00:00:00”))/86400000)+1; }
+function ds(d) { return d.toISOString().split(“T”)[0]; }
+function fmt$(n) { return Math.abs(n).toLocaleString(“en-US”,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtDate(s) { if (!s) return “—”; return new Date(s+“T12:00:00”).toLocaleDateString(“en-US”,{month:“short”,day:“numeric”}); }
+function uid() { return Date.now()+Math.floor(Math.random()*10000); }
+
+function useBudget(data) {
+const totalIncome=data.incomes.reduce((s,i)=>s+i.amount,0);
+const totalBills=data.bills.reduce((s,b)=>s+b.amount,0);
+const paidBills=data.bills.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
+const unpaidBills=totalBills-paidBills;
+const totalExp=data.expenses.reduce((s,e)=>s+e.amount,0);
+const leftover=totalIncome-totalBills-totalExp;
+const daysLeft=getDaysLeft(data.nextPayday);
+const elapsed=getDaysElapsed(data.payPeriodStart);
+const total=getTotalDays(data.payPeriodStart,data.nextPayday);
+const daily=leftover/daysLeft;
+const health=Math.min(Math.max(totalIncome>0?leftover/totalIncome:0,0),1);
+const accumBudget=daily*(elapsed+1);
+const accumLeft=accumBudget-totalExp;
+return {totalIncome,totalBills,paidBills,unpaidBills,totalExp,leftover,daysLeft,elapsed,total,daily,health,accumBudget,accumLeft};
+}
+
+function getSavingsSuggestion(pp) {
+if(pp.length<2) return null;
+const r=pp.slice(-5);
+const avg=r.reduce((s,p)=>s+p.leftover,0)/r.length;
+const mn=Math.min(…r.map(p=>p.leftover));
+if(avg<=50) return{amount:0,message:“Budget is tight — focus on essentials.”,confidence:“low”};
+const pct=mn>200?0.5:0.35;
+const sug=Math.floor((avg*pct)/5)*5;
+if(sug<10) return{amount:0,message:“Not enough consistent surplus yet.”,confidence:“low”};
+const conf=r.every(p=>p.leftover>sug)?“high”:“medium”;
+return{amount:sug,message:conf===“high”?`Consistently $${fmt$(avg)} left. $${sug}/paycheck is solid.`:`Averaged $${fmt$(avg)} left but varies. $${sug}/paycheck is conservative.`,confidence:conf,avgLeftover:avg,periods:r.length};
+}
+
+function getMonthGrid(year,month) {
+const first=new Date(year,month,1);const sd=first.getDay();const dim=new Date(year,month+1,0).getDate();const pd=new Date(year,month,0).getDate();
+const cells=[];
+for(let i=sd-1;i>=0;i–) cells.push({day:pd-i,inMonth:false,date:new Date(year,month-1,pd-i)});
+for(let i=1;i<=dim;i++) cells.push({day:i,inMonth:true,date:new Date(year,month,i)});
+const rem=42-cells.length;
+for(let i=1;i<=rem;i++) cells.push({day:i,inMonth:false,date:new Date(year,month+1,i)});
+const weeks=[];for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));return weeks;
+}
+
+// ══════════════════════════════════════════════
+// SCREENS
+// ══════════════════════════════════════════════
+
+function DashboardScreen({data,setData,setScreen}) {
+const c=useBudget(data);
+const savings=getSavingsSuggestion(data.pastPeriods||[]);
+return (
+<div style={S.screen}>
+<div style={S.heroCard}>
+<div style={S.heroGlow}/>
+<p style={S.heroLabel}>Projected leftover</p>
+<h1 style={{...S.heroAmount,color:c.leftover>=0?”#34d399”:”#f87171”}}>${fmt$(c.leftover)}{c.leftover<0&&<span style={{fontSize:16,marginLeft:4}}>over</span>}</h1>
+<p style={S.heroSub}>after bills & expenses</p>
+<div style={S.healthBarOuter}><div style={{…S.healthBarInner,width:`${c.health*100}%`,background:c.health>0.3?“linear-gradient(90deg,#34d399,#6ee7b7)”:“linear-gradient(90deg,#f87171,#fca5a5)”}}/></div>
+<div style={S.heroStats}>
+<div style={S.heroStat}><span style={S.heroStatVal}>${fmt$(c.daily>0?c.daily:0)}</span><span style={S.heroStatLabel}>/ day safe</span></div>
+<div style={{width:1,height:28,background:“rgba(255,255,255,0.15)”}}/>
+<div style={S.heroStat}><span style={S.heroStatVal}>{c.daysLeft}</span><span style={S.heroStatLabel}>days left</span></div>
+</div>
+</div>
+<div style={S.accumCard}>
+<div style={S.accumHeader}><p style={S.accumLabel}>Spendable today</p><p style={S.accumSub}>Accumulated daily budget minus spending</p></div>
+<div style={S.accumBody}>
+<div style={S.accumMain}><span style={{...S.accumAmount,color:c.accumLeft>=0?”#34d399”:”#f87171”}}>{c.accumLeft<0?”-”:””}${fmt$(c.accumLeft)}</span><span style={S.accumTag}>{c.accumLeft>=0?“under budget”:“over budget”}</span></div>
+<div style={S.accumBreakdown}>
+<div style={S.accumItem}><span style={S.accumItemL}>Budget thru today</span><span style={S.accumItemV}>${fmt$(c.accumBudget)}</span></div>
+<div style={S.accumItem}><span style={S.accumItemL}>Spent so far</span><span style={{…S.accumItemV,color:”#fb923c”}}>-${fmt$(c.totalExp)}</span></div>
+<div style={{height:1,background:“rgba(255,255,255,0.06)”,margin:“2px 0”}}/>
+<div style={S.accumItem}><span style={{…S.accumItemL,fontWeight:600,color:”#cbd5e1”}}>Remaining</span><span style={{...S.accumItemV,fontWeight:700,color:c.accumLeft>=0?”#34d399”:”#f87171”}}>${fmt$(c.accumLeft)}</span></div>
+</div>
+</div>
+<div style={{padding:“0 16px 14px”}}><div style={{display:“flex”,justifyContent:“space-between”,marginBottom:4}}><span style={{fontSize:10,color:”#64748b”}}>Day {c.elapsed+1} of {c.total}</span><span style={{fontSize:10,color:”#64748b”}}>{c.daysLeft} days left</span></div><div style={{height:3,background:“rgba(255,255,255,0.06)”,borderRadius:2}}><div style={{height:“100%”,borderRadius:2,width:`${((c.elapsed+1)/c.total)*100}%`,background:“linear-gradient(90deg,#818cf8,#a78bfa)”}}/></div></div>
+</div>
+{savings&&savings.amount>0&&(
+<div style={{…S.section,border:“1px solid rgba(52,211,153,0.15)”,marginTop:0,marginBottom:2}}>
+<div style={{display:“flex”,alignItems:“center”,gap:8,marginBottom:8}}><span style={{fontSize:14,fontWeight:600,color:”#34d399”}}>💰 Savings Suggestion</span><span style={{fontSize:10,padding:“2px 6px”,borderRadius:4,background:savings.confidence===“high”?“rgba(52,211,153,0.15)”:“rgba(251,191,36,0.15)”,color:savings.confidence===“high”?”#34d399”:”#fbbf24”,fontWeight:600}}>{savings.confidence}</span></div>
+<p style={{fontSize:28,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#34d399”,marginBottom:6}}>${savings.amount}<span style={{fontSize:14,color:”#94a3b8”}}>/paycheck</span></p>
+<p style={{fontSize:12,color:”#94a3b8”,lineHeight:1.5}}>{savings.message}</p>
+</div>
+)}
+<div style={S.statRow}><StatCard label=“Income” value={`$${fmt$(c.totalIncome)}`} accent=”#6ee7b7”/><StatCard label=“Bills left” value={`$${fmt$(c.unpaidBills)}`} accent=”#fbbf24”/></div>
+<div style={S.statRow}><StatCard label=“Bills paid” value={`$${fmt$(c.paidBills)}`} accent=”#818cf8”/><StatCard label=“Spent” value={`$${fmt$(c.totalExp)}`} accent=”#fb923c”/></div>
+{data.debts.length>0&&(<div style={S.section}><div style={S.sectionHeader}><h3 style={S.sectionTitle}>Debt Overview</h3><button style={S.seeAll} onClick={()=>setScreen(“debt”)}>Details →</button></div><div style={{display:“flex”,justifyContent:“space-between”,padding:“4px 0”}}><span style={{fontSize:13,color:”#94a3b8”}}>Total owed</span><span style={{fontSize:16,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#f87171”}}>${fmt$(data.debts.reduce((s,d)=>s+d.balance,0))}</span></div><div style={{display:“flex”,justifyContent:“space-between”,padding:“4px 0”}}><span style={{fontSize:13,color:”#94a3b8”}}>Monthly interest</span><span style={{fontSize:13,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:”#fbbf24”}}>${fmt$(data.debts.reduce((s,d)=>s+(d.balance*d.rate/100/12),0))}</span></div></div>)}
+<div style={S.section}><div style={S.sectionHeader}><h3 style={S.sectionTitle}>Income</h3><button style={S.seeAll} onClick={()=>setScreen(“calendar”)}>Manage →</button></div>{data.incomes.length===0&&<p style={{color:”#334155”,fontSize:13,textAlign:“center”,padding:“8px 0”}}>No income added</p>}{data.incomes.map(i=>(<div key={i.id} style={S.expenseRow}><div><p style={S.expenseName}>{i.name}</p><p style={S.expenseDate}>{fmtDate(i.date)}</p></div><span style={{fontSize:14,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:”#6ee7b7”}}>+${fmt$(i.amount)}</span></div>))}</div>
+<div style={S.section}><div style={S.sectionHeader}><h3 style={S.sectionTitle}>Upcoming Bills</h3><button style={S.seeAll} onClick={()=>setScreen(“calendar”)}>Calendar →</button></div>{data.bills.filter(b=>!b.paid).sort((a,b)=>new Date(a.dueDate)-new Date(b.dueDate)).slice(0,4).map(bill=>(<BillRow key={bill.id} bill={bill} onToggle={()=>setData(p=>({…p,bills:p.bills.map(b=>b.id===bill.id?{…b,paid:!b.paid}:b)}))}/>))}{data.bills.filter(b=>!b.paid).length===0&&<p style={{color:”#334155”,fontSize:13,textAlign:“center”,padding:“8px 0”}}>All paid!</p>}</div>
+<div style={S.section}><div style={S.sectionHeader}><h3 style={S.sectionTitle}>Recent Expenses</h3><button style={S.seeAll} onClick={()=>setScreen(“calendar”)}>See all →</button></div>{data.expenses.slice(-3).reverse().map(e=>(<div key={e.id} style={S.expenseRow}><div><p style={S.expenseName}>{e.name}</p><p style={S.expenseDate}>{fmtDate(e.date)}</p></div><p style={S.expenseAmt}>-${fmt$(e.amount)}</p></div>))}</div>
+<div style={{height:100}}/>
+</div>
+);
+}
+
+function CalendarScreen({data,setData}) {
+const today=new Date(),todayStr=ds(today);
+const [vm,setVm]=useState(today.getMonth()),[vy,setVy]=useState(today.getFullYear()),[sel,setSel]=useState(todayStr),[addType,setAddType]=useState(null),[fn,setFn]=useState(””),[fa,setFa]=useState(””);
+const weeks=getMonthGrid(vy,vm);const ml=new Date(vy,vm).toLocaleDateString(“en-US”,{month:“long”,year:“numeric”});
+const pm=()=>{if(vm===0){setVm(11);setVy(y=>y-1)}else setVm(m=>m-1)};
+const nm=()=>{if(vm===11){setVm(0);setVy(y=>y+1)}else setVm(m=>m+1)};
+const gt=()=>{setVm(today.getMonth());setVy(today.getFullYear());setSel(todayStr)};
+const bd={},ed={},id={};
+data.bills.forEach(b=>{if(!bd[b.dueDate])bd[b.dueDate]=[];bd[b.dueDate].push(b)});
+data.expenses.forEach(e=>{if(!ed[e.date])ed[e.date]=[];ed[e.date].push(e)});
+data.incomes.forEach(i=>{if(!id[i.date])id[i.date]=[];id[i.date].push(i)});
+const sb=bd[sel]||[],se=ed[sel]||[],si=id[sel]||[];
+const selSpend=sb.reduce((s,b)=>s+b.amount,0)+se.reduce((s,e)=>s+e.amount,0);
+const selInc=si.reduce((s,i)=>s+i.amount,0);
+const ppS=data.payPeriodStart?new Date(data.payPeriodStart+“T12:00:00”):null;
+const ppE=data.nextPayday?new Date(data.nextPayday+“T12:00:00”):null;
+const addItem=()=>{if(!fn||!fa)return;const a=parseFloat(fa);if(addType===“bill”)setData(p=>({…p,bills:[…p.bills,{id:uid(),name:fn,amount:a,dueDate:sel,paid:false}]}));else if(addType===“expense”)setData(p=>({…p,expenses:[…p.expenses,{id:uid(),name:fn,amount:a,date:sel}]}));else if(addType===“income”)setData(p=>({…p,incomes:[…p.incomes,{id:uid(),name:fn,amount:a,date:sel}]}));setFn(””);setFa(””);setAddType(null)};
+return (
+<div style={S.screen}>
+<div style={S.monthNav}><button style={S.monthBtn} onClick={pm}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg></button><button style={S.monthLabel} onClick={gt}>{ml}</button><button style={S.monthBtn} onClick={nm}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 6 15 12 9 18"/></svg></button></div>
+<div style={S.calCard}>
+<div style={S.calRow}>{[“S”,“M”,“T”,“W”,“T”,“F”,“S”].map((d,i)=>(<div key={i} style={S.calDayHeader}>{d}</div>))}</div>
+{weeks.map((w,wi)=>(<div key={wi} style={S.calRow}>{w.map((c,ci)=>{const cs=ds(c.date),isT=cs===todayStr,isS=cs===sel,inPP=ppS&&ppE&&c.date>=ppS&&c.date<=ppE,hB=!!bd[cs],hE=!!ed[cs],hI=!!id[cs],cSp=(bd[cs]||[]).reduce((s,b)=>s+b.amount,0)+(ed[cs]||[]).reduce((s,e)=>s+e.amount,0),cIn=(id[cs]||[]).reduce((s,i)=>s+i.amount,0);return(<button key={ci} onClick={()=>setSel(cs)} style={{…S.calCell,opacity:c.inMonth?1:0.2,background:isS?“rgba(52,211,153,0.18)”:isT?“rgba(129,140,248,0.12)”:inPP?“rgba(52,211,153,0.04)”:“transparent”,border:isS?“1.5px solid rgba(52,211,153,0.5)”:isT?“1.5px solid rgba(129,140,248,0.4)”:“1.5px solid transparent”}}><span style={{fontSize:12,fontWeight:isT?700:500,color:isT?”#818cf8”:isS?”#34d399”:”#cbd5e1”,fontFamily:”‘JetBrains Mono’,monospace”}}>{c.day}</span>{cIn>0&&<span style={{fontSize:8,fontWeight:600,color:”#6ee7b7”,fontFamily:”‘JetBrains Mono’,monospace”}}>+${cIn>=1000?(cIn/1000).toFixed(1)+“k”:Math.round(cIn)}</span>}{cSp>0&&<span style={{fontSize:8,fontWeight:600,color:hB?”#fbbf24”:”#fb923c”,fontFamily:”‘JetBrains Mono’,monospace”}}>-${cSp>=1000?(cSp/1000).toFixed(1)+“k”:Math.round(cSp)}</span>}<div style={{display:“flex”,gap:2,marginTop:1,minHeight:5}}>{hI&&<div style={{width:4,height:4,borderRadius:“50%”,background:”#6ee7b7”}}/>}{hB&&<div style={{width:4,height:4,borderRadius:“50%”,background:”#fbbf24”}}/>}{hE&&<div style={{width:4,height:4,borderRadius:“50%”,background:”#fb923c”}}/>}</div></button>)})}</div>))}
+<div style={{display:“flex”,gap:12,justifyContent:“center”,padding:“6px 0 2px”}}>{[[”#6ee7b7”,“Income”],[”#fbbf24”,“Bill”],[”#fb923c”,“Expense”],[”#818cf8”,“Today”]].map(([c,l])=>(<div key={l} style={{display:“flex”,alignItems:“center”,gap:4}}><div style={{width:6,height:6,borderRadius:“50%”,background:c}}/><span style={{fontSize:9,color:”#64748b”}}>{l}</span></div>))}</div>
+</div>
+<div style={{...S.section,marginTop:10}}>
+<div style={S.sectionHeader}><div><h3 style={S.sectionTitle}>{fmtDate(sel)}</h3></div><div style={{display:“flex”,gap:6}}>{selInc>0&&<span style={{fontSize:14,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#6ee7b7”}}>+${fmt$(selInc)}</span>}{selSpend>0&&<span style={{fontSize:14,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#f87171”}}>-${fmt$(selSpend)}</span>}</div></div>
+<div style={{display:“flex”,gap:6,marginBottom:12,flexWrap:“wrap”}}>{[“income”,“bill”,“expense”].map(t=>(<button key={t} style={{…S.addBtn,…(addType===t?{background:t===“income”?“rgba(110,231,183,0.25)”:t===“bill”?“rgba(251,191,36,0.15)”:“rgba(251,146,60,0.15)”,color:t===“income”?”#6ee7b7”:t===“bill”?”#fbbf24”:”#fb923c”}:{})}} onClick={()=>{setAddType(addType===t?null:t);setFn(””);setFa(””)}}>{addType===t?“✕ Cancel”:`+ ${t.charAt(0).toUpperCase()+t.slice(1)}`}</button>))}</div>
+{addType&&(<div style={S.addForm}><div style={{display:“flex”,alignItems:“center”,gap:6,marginBottom:4}}><div style={{width:8,height:8,borderRadius:“50%”,background:addType===“income”?”#6ee7b7”:addType===“bill”?”#fbbf24”:”#fb923c”}}/><span style={{fontSize:12,fontWeight:600,color:addType===“income”?”#6ee7b7”:addType===“bill”?”#fbbf24”:”#fb923c”}}>New {addType} for {fmtDate(sel)}</span></div><input style={S.input} placeholder={addType===“income”?“Source (e.g. Paycheck)”:addType===“bill”?“Bill name”:“What was it?”} value={fn} onChange={e=>setFn(e.target.value)}/><input style={S.input} placeholder=“Amount” type=“number” value={fa} onChange={e=>setFa(e.target.value)}/><button style={{…S.submitBtn,background:addType===“income”?“linear-gradient(135deg,#059669,#6ee7b7)”:addType===“bill”?“linear-gradient(135deg,#b45309,#fbbf24)”:“linear-gradient(135deg,#c2410c,#fb923c)”}} onClick={addItem}>Add {addType.charAt(0).toUpperCase()+addType.slice(1)}</button></div>)}
+{si.length===0&&sb.length===0&&se.length===0&&!addType&&<p style={{color:”#334155”,fontSize:13,textAlign:“center”,padding:“16px 0”}}>Nothing on this day</p>}
+{si.length>0&&<div style={{marginBottom:8}}><p style={{fontSize:11,fontWeight:600,color:”#6ee7b7”,marginBottom:4,textTransform:“uppercase”,letterSpacing:0.5}}>Income</p>{si.map(i=>(<div key={i.id} style={S.expenseRow}><p style={S.expenseName}>{i.name}</p><div style={{display:“flex”,alignItems:“center”,gap:8}}><span style={{…S.billAmt,color:”#6ee7b7”}}>+${fmt$(i.amount)}</span><button style={S.deleteBtn} onClick={()=>setData(p=>({…p,incomes:p.incomes.filter(x=>x.id!==i.id)}))}>✕</button></div></div>))}</div>}
+{sb.length>0&&<div style={{marginBottom:8}}><p style={{fontSize:11,fontWeight:600,color:”#fbbf24”,marginBottom:4,textTransform:“uppercase”,letterSpacing:0.5}}>Bills</p>{sb.map(b=>(<div key={b.id} style={S.billRow}><button onClick={()=>setData(p=>({…p,bills:p.bills.map(x=>x.id===b.id?{…x,paid:!x.paid}:x)}))} style={{…S.checkbox,background:b.paid?”#34d399”:“transparent”,borderColor:b.paid?”#34d399”:”#334155”}}>{b.paid&&<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}</button><div style={{flex:1}}><p style={{…S.billName,textDecoration:b.paid?“line-through”:“none”,opacity:b.paid?0.5:1}}>{b.name}</p></div><span style={{...S.billAmt,opacity:b.paid?0.5:1}}>${fmt$(b.amount)}</span><button style={S.deleteBtn} onClick={()=>setData(p=>({…p,bills:p.bills.filter(x=>x.id!==b.id)}))}>✕</button></div>))}</div>}
+{se.length>0&&<div><p style={{fontSize:11,fontWeight:600,color:”#fb923c”,marginBottom:4,textTransform:“uppercase”,letterSpacing:0.5}}>Expenses</p>{se.map(e=>(<div key={e.id} style={S.expenseRow}><p style={S.expenseName}>{e.name}</p><div style={{display:“flex”,alignItems:“center”,gap:8}}><span style={S.expenseAmt}>-${fmt$(e.amount)}</span><button style={S.deleteBtn} onClick={()=>setData(p=>({…p,expenses:p.expenses.filter(x=>x.id!==e.id)}))}>✕</button></div></div>))}</div>}
+</div>
+<div style={{height:100}}/>
+</div>
+);
+}
+
+function DebtScreen({data,setData}) {
+const [sa,setSa]=useState(false),[n,sn]=useState(””),[b,sb]=useState(””),[r,sr]=useState(””),[mp,smp]=useState(””),[pid,spid]=useState(null),[pa,spa]=useState(””);
+const td=data.debts.reduce((s,d)=>s+d.balance,0),tmi=data.debts.reduce((s,d)=>s+(d.balance*d.rate/100/12),0),tmp=data.debts.reduce((s,d)=>s+d.minPayment,0);
+const addDebt=()=>{if(!n||!b)return;setData(p=>({…p,debts:[…p.debts,{id:uid(),name:n,balance:parseFloat(b),rate:parseFloat(r)||0,minPayment:parseFloat(mp)||0}]}));sn(””);sb(””);sr(””);smp(””);setSa(false)};
+const pay=(did)=>{const a=parseFloat(pa);if(!a||a<=0)return;setData(p=>({…p,debts:p.debts.map(d=>d.id===did?{…d,balance:Math.max(0,d.balance-a)}:d)}));spid(null);spa(””)};
+return (
+<div style={S.screen}>
+<div style={{…S.heroCard,padding:“20px 24px”}}><p style={S.heroLabel}>Total Debt</p><h1 style={{...S.heroAmount,fontSize:36,color:td>0?”#f87171”:”#34d399”}}>${fmt$(td)}</h1><div style={{display:“flex”,justifyContent:“space-around”,marginTop:16}}><div style={S.heroStat}><span style={{…S.heroStatVal,fontSize:15,color:”#fbbf24”}}>${fmt$(tmi)}</span><span style={S.heroStatLabel}>monthly interest</span></div><div style={{width:1,height:28,background:“rgba(255,255,255,0.1)”}}/><div style={S.heroStat}><span style={{...S.heroStatVal,fontSize:15}}>${fmt$(tmp)}</span><span style={S.heroStatLabel}>min payments</span></div></div></div>
+<div style={S.section}>
+<div style={S.sectionHeader}><h3 style={S.sectionTitle}>Debts</h3><button style={S.addBtn} onClick={()=>setSa(!sa)}>{sa?“✕”:”+ Add”}</button></div>
+{sa&&(<div style={S.addForm}><input style={S.input} placeholder=“Name (e.g. Credit Card)” value={n} onChange={e=>sn(e.target.value)}/><input style={S.input} placeholder=“Balance” type=“number” value={b} onChange={e=>sb(e.target.value)}/><input style={S.input} placeholder=“Interest rate %” type=“number” value={r} onChange={e=>sr(e.target.value)}/><input style={S.input} placeholder=“Minimum payment” type=“number” value={mp} onChange={e=>smp(e.target.value)}/><button style={{…S.submitBtn,background:“linear-gradient(135deg,#dc2626,#f87171)”}} onClick={addDebt}>Add Debt</button></div>)}
+{data.debts.length===0&&!sa&&<p style={{color:”#334155”,fontSize:13,textAlign:“center”,padding:“16px 0”}}>No debts — nice!</p>}
+{data.debts.map(d=>{const mi=d.balance*d.rate/100/12;return(<div key={d.id} style={{padding:“12px 0”,borderBottom:“1px solid rgba(255,255,255,0.04)”}}><div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”}}><div><p style={{fontSize:14,fontWeight:600,color:”#e2e8f0”}}>{d.name}</p><p style={{fontSize:11,color:”#64748b”,marginTop:2}}>{d.rate}% APR · ${fmt$(d.minPayment)}/mo min</p></div><div style={{textAlign:“right”}}><p style={{fontSize:16,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#f87171”}}>${fmt$(d.balance)}</p><p style={{fontSize:10,color:”#fbbf24”}}>+${fmt$(mi)}/mo interest</p></div></div><div style={{marginTop:8,display:“flex”,gap:8,alignItems:“center”}}><button style={{…S.addBtn,fontSize:11,padding:“4px 10px”}} onClick={()=>{spid(pid===d.id?null:d.id);spa(””)}}>{pid===d.id?“Cancel”:“Pay”}</button><button style={{…S.deleteBtn,fontSize:11}} onClick={()=>setData(p=>({…p,debts:p.debts.filter(x=>x.id!==d.id)}))}>Remove</button></div>{pid===d.id&&(<div style={{display:“flex”,gap:8,marginTop:8}}><input style={{…S.input,flex:1,padding:“8px 12px”,fontSize:13}} placeholder=“Payment amount” type=“number” value={pa} onChange={e=>spa(e.target.value)}/><button style={{…S.submitBtn,padding:“8px 16px”,fontSize:13}} onClick={()=>pay(d.id)}>Apply</button></div>)}</div>)})}
+</div>
+<div style={{height:100}}/>
+</div>
+);
+}
+
+function AffordScreen({data}) {
+const [amount,setAmount]=useState(””);const [result,setResult]=useState(null);const c=useBudget(data);
+const check=()=>{const p=parseFloat(amount);if(!p||p<=0)return;const after=c.leftover-p;setResult({ok:after>=0,p,before:c.leftover,after,days:c.daysLeft,dBefore:c.daily,dAfter:after/c.daysLeft})};
+return (
+<div style={S.screen}>
+<div style={S.section}><h3 style={{...S.sectionTitle,marginBottom:8}}>Can I Afford It?</h3><p style={{color:”#94a3b8”,fontSize:14,marginBottom:20,lineHeight:1.5}}>Check if a purchase fits before payday.</p><input style={{…S.input,fontSize:24,textAlign:“center”,padding:16,fontWeight:600}} placeholder=”$0.00” type=“number” value={amount} onChange={e=>{setAmount(e.target.value);setResult(null)}}/><button style={{...S.submitBtn,marginTop:12}} onClick={check}>Check</button></div>
+{result&&(<div style={{...S.section,marginTop:16}}><div style={{display:“flex”,alignItems:“center”,justifyContent:“center”,gap:8,padding:“12px 20px”,borderRadius:12,marginBottom:20,background:result.ok?“rgba(52,211,153,0.15)”:“rgba(248,113,113,0.15)”}}><span style={{fontSize:20}}>{result.ok?“✓”:“✗”}</span><span style={{fontSize:16,fontWeight:600,color:result.ok?”#34d399”:”#f87171”}}>{result.ok?“Yes, you can afford it”:“Over budget”}</span></div><RRow label=“Purchase” value={`$${fmt$(result.p)}`}/><RRow label="Days left" value={result.days}/><div style={{height:1,background:“rgba(255,255,255,0.06)”,margin:“8px 0”}}/><RRow label=“Spendable before” value={`$${fmt$(result.before)}`}/><RRow label=“Spendable after” value={`$${fmt$(result.after)}`} hl={!result.ok}/><div style={{height:1,background:“rgba(255,255,255,0.06)”,margin:“8px 0”}}/><RRow label=“Daily before” value={`$${fmt$(result.dBefore)}/day`}/><RRow label=“Daily after” value={`$${fmt$(result.dAfter>0?result.dAfter:0)}/day`} hl={!result.ok}/></div>)}
+<div style={{height:100}}/>
+</div>
+);
+}
+
+function SettingsScreen({data,setData,setScreen,STORAGE_KEY}) {
+const [ppS,sPpS]=useState(data.payPeriodStart),[ppE,sPpE]=useState(data.payPeriodEnd),[pd,sPd]=useState(data.nextPayday),[sc,sSc]=useState(null),[btk,sBtk]=useState([]);
+const c=useBudget(data);
+const updateDates=()=>setData(p=>({…p,payPeriodStart:ppS,payPeriodEnd:ppE,nextPayday:pd}));
+const smartReset=()=>{const snap={start:data.payPeriodStart,end:data.nextPayday,income:c.totalIncome,bills:c.totalBills,expenses:c.totalExp,leftover:c.leftover};const os=new Date(data.payPeriodStart+“T12:00:00”),ns=new Date(ppS+“T12:00:00”),sh=Math.round((ns-os)/86400000);const kept=btk.filter(b=>b.keep).map(b=>{const d=new Date(b.dueDate+“T12:00:00”);d.setDate(d.getDate()+sh);return{id:uid(),name:b.name,amount:b.amount,dueDate:ds(d),paid:false}});setData({payPeriodStart:ppS,payPeriodEnd:ppE,nextPayday:pd,incomes:[],bills:kept,expenses:[],debts:data.debts,pastPeriods:[…(data.pastPeriods||[]),snap]});sSc(null);setScreen(“home”)};
+const fullReset=()=>{const snap={start:data.payPeriodStart,end:data.nextPayday,income:c.totalIncome,bills:c.totalBills,expenses:c.totalExp,leftover:c.leftover};setData({payPeriodStart:ppS,payPeriodEnd:ppE,nextPayday:pd,incomes:[],bills:[],expenses:[],debts:data.debts,pastPeriods:[…(data.pastPeriods||[]),snap]});sSc(null);setScreen(“home”)};
+return (
+<div style={S.screen}>
+<div style={S.section}><h3 style={{...S.sectionTitle,marginBottom:12}}>Pay Period</h3><div style={{display:“flex”,flexDirection:“column”,gap:10}}><div><label style={{fontSize:11,color:”#64748b”,display:“block”,marginBottom:4}}>Period start</label><input style={S.input} type=“date” value={ppS} onChange={e=>sPpS(e.target.value)}/></div><div><label style={{fontSize:11,color:”#64748b”,display:“block”,marginBottom:4}}>Period end</label><input style={S.input} type=“date” value={ppE} onChange={e=>sPpE(e.target.value)}/></div><div><label style={{fontSize:11,color:”#64748b”,display:“block”,marginBottom:4}}>Next payday</label><input style={S.input} type=“date” value={pd} onChange={e=>sPd(e.target.value)}/></div><button style={{...S.submitBtn,marginTop:4}} onClick={updateDates}>Update Dates</button></div></div>
+<div style={{...S.section,marginTop:12}}><h3 style={{...S.sectionTitle,marginBottom:4}}>New Pay Period</h3><p style={{fontSize:12,color:”#64748b”,marginBottom:16,lineHeight:1.5}}>Start fresh for a new cycle.</p>
+<button style={{…S.resetBtn,border:“1px solid rgba(129,140,248,0.3)”,marginBottom:10}} onClick={()=>{sBtk(data.bills.map(b=>({…b,keep:true})));sSc(“smart”)}}><div style={{display:“flex”,alignItems:“center”,gap:10}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg><div style={{textAlign:“left”}}><p style={{fontSize:14,fontWeight:600,color:”#e2e8f0”}}>Smart Reset</p><p style={{fontSize:11,color:”#94a3b8”,marginTop:2}}>Keep bills, shift dates, clear expenses</p></div></div></button>
+<button style={{…S.resetBtn,border:“1px solid rgba(248,113,113,0.3)”}} onClick={()=>sSc(“full”)}><div style={{display:“flex”,alignItems:“center”,gap:10}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg><div style={{textAlign:“left”}}><p style={{fontSize:14,fontWeight:600,color:”#e2e8f0”}}>Full Reset</p><p style={{fontSize:11,color:”#94a3b8”,marginTop:2}}>Wipe income, bills, expenses (keeps debts)</p></div></div></button>
+</div>
+{sc===“smart”&&(<div style={{…S.section,marginTop:12,border:“1px solid rgba(129,140,248,0.2)”}}><h3 style={{…S.sectionTitle,marginBottom:4,color:”#818cf8”}}>Smart Reset Preview</h3><p style={{fontSize:12,color:”#94a3b8”,marginBottom:12}}>Uncheck bills you don’t want to carry forward.</p>{btk.map((b,i)=>{const sh=Math.round((new Date(ppS+“T12:00:00”)-new Date(data.payPeriodStart+“T12:00:00”))/86400000);const nd=new Date(b.dueDate+“T12:00:00”);nd.setDate(nd.getDate()+sh);return(<div key={b.id} style={{display:“flex”,alignItems:“center”,gap:10,padding:“8px 0”,borderBottom:“1px solid rgba(255,255,255,0.04)”}}><button onClick={()=>{const u=[…btk];u[i]={…u[i],keep:!u[i].keep};sBtk(u)}} style={{…S.checkbox,width:20,height:20,background:b.keep?”#818cf8”:“transparent”,borderColor:b.keep?”#818cf8”:”#334155”}}>{b.keep&&<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}</button><div style={{flex:1}}><p style={{fontSize:13,fontWeight:500,color:b.keep?”#e2e8f0”:”#475569”,textDecoration:b.keep?“none”:“line-through”}}>{b.name}</p><p style={{fontSize:10,color:”#64748b”}}>{fmtDate(b.dueDate)} → {fmtDate(ds(nd))}</p></div><span style={{fontSize:13,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:b.keep?”#fbbf24”:”#334155”}}>${fmt$(b.amount)}</span></div>)})}<div style={{display:“flex”,gap:8,marginTop:14}}><button style={{…S.addBtn,flex:1,textAlign:“center”,padding:“10px 0”}} onClick={()=>sSc(null)}>Cancel</button><button style={{…S.submitBtn,flex:2,background:“linear-gradient(135deg,#4f46e5,#818cf8)”}} onClick={smartReset}>Start New Period</button></div></div>)}
+{sc===“full”&&(<div style={{…S.section,marginTop:12,border:“1px solid rgba(248,113,113,0.2)”}}><h3 style={{…S.sectionTitle,marginBottom:8,color:”#f87171”}}>Are you sure?</h3><p style={{fontSize:13,color:”#94a3b8”,marginBottom:16}}>Wipes income, bills, expenses. Keeps debts and history.</p><div style={{display:“flex”,gap:8}}><button style={{…S.addBtn,flex:1,textAlign:“center”,padding:“10px 0”}} onClick={()=>sSc(null)}>Cancel</button><button style={{…S.submitBtn,flex:2,background:“linear-gradient(135deg,#dc2626,#f87171)”}} onClick={fullReset}>Wipe Everything</button></div></div>)}
+{data.pastPeriods&&data.pastPeriods.length>0&&(<div style={{...S.section,marginTop:12}}><h3 style={{...S.sectionTitle,marginBottom:8}}>Period History</h3>{data.pastPeriods.slice().reverse().map((p,i)=>(<div key={i} style={{padding:“8px 0”,borderBottom:“1px solid rgba(255,255,255,0.04)”}}><div style={{display:“flex”,justifyContent:“space-between”}}><span style={{fontSize:12,color:”#94a3b8”}}>{fmtDate(p.start)} – {fmtDate(p.end)}</span><span style={{fontSize:12,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:p.leftover>=0?”#34d399”:”#f87171”}}>${fmt$(p.leftover)} left</span></div></div>))}</div>)}
+<div style={{height:100}}/>
+</div>
+);
+}
+
+// ── Shared ──
+function StatCard({label,value,accent}){return(<div style={S.statCard}><div style={{width:4,height:28,borderRadius:2,background:accent,position:“absolute”,left:0,top:16}}/><p style={S.statLabel}>{label}</p><p style={S.statValue}>{value}</p></div>)}
+function BillRow({bill,onToggle}){return(<div style={S.billRow}><button onClick={onToggle} style={{…S.checkbox,background:bill.paid?”#34d399”:“transparent”,borderColor:bill.paid?”#34d399”:”#334155”}}>{bill.paid&&<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}</button><div style={{flex:1}}><p style={{…S.billName,textDecoration:bill.paid?“line-through”:“none”,opacity:bill.paid?0.5:1}}>{bill.name}</p><p style={S.billDate}>Due {fmtDate(bill.dueDate)}</p></div><p style={{...S.billAmt,opacity:bill.paid?0.5:1}}>${fmt$(bill.amount)}</p></div>)}
+function RRow({label,value,hl}){return(<div style={{display:“flex”,justifyContent:“space-between”,padding:“8px 0”}}><span style={{color:”#94a3b8”,fontSize:14}}>{label}</span><span style={{color:hl?”#f87171”:”#e2e8f0”,fontSize:14,fontWeight:600}}>{value}</span></div>)}
+
+// ── Icons ──
+function HomeIcon({a}){return(<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a?”#34d399”:”#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>)}
+function CalIcon({a}){return(<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a?”#34d399”:”#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><rect x="7" y="14" width="3" height="3" rx="0.5"/></svg>)}
+function DebtIcon({a}){return(<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a?”#34d399”:”#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>)}
+function CalcIcon({a}){return(<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a?”#34d399”:”#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>)}
+function GearIcon(){return(<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>)}
+
+// ══════════════════════════════════════════════
+// MAIN APP
+// ══════════════════════════════════════════════
+
+const SK = “pbdata”;
+
+export default function PaycheckBudget() {
+const [screen, setScreen] = useState(“welcome”);
+const [data, setData] = useState(null);
+const [saveMsg, setSaveMsg] = useState(””);
+const [hasSaved, setHasSaved] = useState(null); // null = checking, object = found, false = nothing
+
+// Check for saved session on mount
+useEffect(() => {
+const check = async () => {
+try {
+if (typeof window !== “undefined” && window.storage) {
+const result = await window.storage.get(SK, false);
+if (result && result.value) {
+setHasSaved(JSON.parse(result.value));
+return;
+}
+}
+} catch (e) { /* no saved data */ }
+setHasSaved(false);
+};
+check();
+}, []);
+
+// Save function
+const save = async () => {
+if (!data) return;
+setSaveMsg(“saving…”);
+try {
+if (!window.storage || !window.storage.set) {
+setSaveMsg(“Error: window.storage not found”);
+return;
+}
+const jsonStr = JSON.stringify(data);
+const result = await window.storage.set(SK, jsonStr, false);
+if (result) {
+setSaveMsg(“✓ Saved! (” + Math.round(jsonStr.length/1024) + “kb)”);
+setHasSaved(data);
+setTimeout(() => setSaveMsg(””), 3000);
+} else {
+setSaveMsg(“Error: write returned null”);
+}
+} catch (e) {
+setSaveMsg(“Err: “ + (e?.message || String(e)).slice(0, 60));
+}
+};
+
+// ── Welcome Screen ──
+if (screen === “welcome”) {
+const found = hasSaved && typeof hasSaved === “object”;
+const si = found ? hasSaved : null;
+return (
+<div style={{…S.device,display:“flex”,flexDirection:“column”,alignItems:“center”,justifyContent:“center”,padding:32}}>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap'); * { box-sizing: border-box; margin: 0; padding: 0; }`}</style>
+<div style={{fontSize:40,marginBottom:16}}>💰</div>
+<h1 style={{fontSize:24,fontWeight:700,color:”#f1f5f9”,fontFamily:”‘DM Sans’,sans-serif”,marginBottom:6,textAlign:“center”}}>Paycheck Budget</h1>
+<p style={{fontSize:13,color:”#64748b”,fontFamily:”‘DM Sans’,sans-serif”,textAlign:“center”,lineHeight:1.5,marginBottom:24,maxWidth:300}}>Budget by pay period, not by month.</p>
+
+```
+    {found && si && (
+      <div style={{width:"100%",maxWidth:300,background:"#111827",borderRadius:14,padding:16,marginBottom:20,border:"1px solid rgba(52,211,153,0.15)"}}>
+        <p style={{fontSize:11,color:"#34d399",fontWeight:600,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5,fontFamily:"'DM Sans',sans-serif"}}>Saved session found</p>
+        {si.nextPayday && <p style={{fontSize:13,color:"#e2e8f0",fontFamily:"'DM Sans',sans-serif",marginBottom:4}}>{fmtDate(si.payPeriodStart)} – {fmtDate(si.nextPayday)}</p>}
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",marginTop:4}}>
+          {si.incomes?.length>0&&<span style={{fontSize:11,color:"#6ee7b7",fontFamily:"'JetBrains Mono',monospace"}}>${fmt$(si.incomes.reduce((s,i)=>s+i.amount,0))} income</span>}
+          {si.bills?.length>0&&<span style={{fontSize:11,color:"#fbbf24",fontFamily:"'JetBrains Mono',monospace"}}>{si.bills.length} bills</span>}
+          {si.debts?.length>0&&<span style={{fontSize:11,color:"#f87171",fontFamily:"'JetBrains Mono',monospace"}}>{si.debts.length} debts</span>}
+        </div>
+      </div>
+    )}
+
+    <button
+      disabled={!found}
+      style={{
+        ...S.submitBtn,width:"100%",maxWidth:300,marginBottom:10,
+        opacity:found?1:0.3,cursor:found?"pointer":"default",
+        background:found?"linear-gradient(135deg,#059669,#34d399)":"#1e293b",
+        color:found?"#0a0f1a":"#475569",
+      }}
+      onClick={()=>{if(found){setData({...EMPTY_DATA,...si});setScreen("home")}}}
+    >
+      {hasSaved===null?"Checking...":(found?"Resume Last Session":"No Saved Session")}
+    </button>
+
+    <button
+      style={{...S.resetBtn,width:"100%",maxWidth:300,border:"1px solid rgba(255,255,255,0.1)",color:"#e2e8f0",fontSize:14,fontWeight:600,fontFamily:"'DM Sans',sans-serif",textAlign:"center",padding:14}}
+      onClick={()=>{setData({...EMPTY_DATA});setScreen("home")}}
+    >
+      Start Fresh
+    </button>
+  </div>
+);
+```
+
+}
+
+if (!data) { setData({…EMPTY_DATA}); return null; }
+
+const titles={home:“Dashboard”,calendar:“Calendar”,debt:“Debt”,afford:“Afford Check”,settings:“Settings”};
+
+return (
+<div style={S.device}>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap'); * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; } input:focus { outline: none; } input[type="date"] { color-scheme: dark; } ::-webkit-scrollbar { display: none; }`}</style>
+
+```
+  <div style={S.statusBar}>
+    <span style={S.statusTime}>{new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>
+    <span style={S.payPeriod}>{fmtDate(data.payPeriodStart)} – {fmtDate(data.nextPayday)}</span>
+  </div>
+  <div style={{...S.header,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+    <h2 style={S.headerTitle}>{titles[screen]||"Budget"}</h2>
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      <button onClick={save} style={{background:saveMsg.includes("Saved")?"rgba(52,211,153,0.15)":saveMsg.includes("Error")||saveMsg.includes("null")?"rgba(248,113,113,0.15)":"rgba(255,255,255,0.06)",border:saveMsg.includes("Saved")?"1px solid rgba(52,211,153,0.3)":saveMsg.includes("Error")||saveMsg.includes("null")?"1px solid rgba(248,113,113,0.3)":"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"5px 12px",cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontFamily:"'DM Sans',sans-serif"}}>
+        {saveMsg ? (
+          <span style={{fontSize:11,fontWeight:600,color:saveMsg.includes("Saved")?"#34d399":saveMsg.includes("saving")?"#94a3b8":"#f87171"}}>{saveMsg}</span>
+        ) : (
+          <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg><span style={{fontSize:11,fontWeight:600,color:"#94a3b8"}}>Save</span></>
+        )}
+      </button>
+      <button style={{background:"none",border:"none",cursor:"pointer",padding:6}} onClick={()=>setScreen(screen==="settings"?"home":"settings")}><GearIcon/></button>
+    </div>
+  </div>
+
+  <div style={S.content}>
+    {screen==="home"&&<DashboardScreen data={data} setData={setData} setScreen={setScreen}/>}
+    {screen==="calendar"&&<CalendarScreen data={data} setData={setData}/>}
+    {screen==="debt"&&<DebtScreen data={data} setData={setData}/>}
+    {screen==="afford"&&<AffordScreen data={data}/>}
+    {screen==="settings"&&<SettingsScreen data={data} setData={setData} setScreen={setScreen} STORAGE_KEY={SK}/>}
+  </div>
+
+  <div style={S.tabBar}>
+    {[{key:"home",label:"Home",Icon:HomeIcon},{key:"calendar",label:"Calendar",Icon:CalIcon},{key:"debt",label:"Debt",Icon:DebtIcon},{key:"afford",label:"Afford?",Icon:CalcIcon}].map(({key,label,Icon})=>(
+      <button key={key} style={{...S.tab,color:screen===key?"#34d399":"#64748b"}} onClick={()=>setScreen(key)}><Icon a={screen===key}/><span style={{fontSize:10,marginTop:2,fontWeight:screen===key?600:400}}>{label}</span></button>
+    ))}
+  </div>
+</div>
+```
+
+);
+}
+
+// ── Styles ──
+const S={
+device:{maxWidth:420,margin:“0 auto”,minHeight:“100vh”,background:”#0a0f1a”,fontFamily:”‘DM Sans’,sans-serif”,color:”#e2e8f0”,position:“relative”,overflow:“hidden”},
+statusBar:{display:“flex”,justifyContent:“space-between”,alignItems:“center”,padding:“12px 20px 4px”,fontSize:12,color:”#64748b”},
+statusTime:{fontFamily:”‘JetBrains Mono’,monospace”,fontWeight:500},
+payPeriod:{fontWeight:500,letterSpacing:0.3},
+header:{padding:“8px 20px 12px”},
+headerTitle:{fontSize:26,fontWeight:700,letterSpacing:-0.5,color:”#f1f5f9”},
+content:{overflowY:“auto”,height:“calc(100vh - 130px)”,paddingBottom:20},
+screen:{padding:“0 16px”},
+heroCard:{position:“relative”,background:“linear-gradient(145deg,#111827,#1e293b)”,borderRadius:20,padding:“28px 24px 20px”,marginBottom:12,overflow:“hidden”,border:“1px solid rgba(52,211,153,0.1)”},
+heroGlow:{position:“absolute”,top:-40,right:-40,width:120,height:120,borderRadius:“50%”,background:“radial-gradient(circle,rgba(52,211,153,0.15),transparent 70%)”},
+heroLabel:{fontSize:13,color:”#94a3b8”,fontWeight:500,marginBottom:4},
+heroAmount:{fontSize:44,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,letterSpacing:-2,margin:“4px 0 2px”},
+heroSub:{fontSize:12,color:”#64748b”,marginBottom:16},
+healthBarOuter:{height:4,background:“rgba(255,255,255,0.06)”,borderRadius:2,marginBottom:18},
+healthBarInner:{height:“100%”,borderRadius:2,transition:“width 0.6s ease”},
+heroStats:{display:“flex”,justifyContent:“center”,alignItems:“center”,gap:28},
+heroStat:{display:“flex”,flexDirection:“column”,alignItems:“center”},
+heroStatVal:{fontSize:18,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#f1f5f9”},
+heroStatLabel:{fontSize:11,color:”#64748b”,marginTop:2},
+accumCard:{background:”#111827”,borderRadius:16,marginBottom:12,overflow:“hidden”,border:“1px solid rgba(129,140,248,0.12)”},
+accumHeader:{padding:“14px 16px 0”},accumLabel:{fontSize:14,fontWeight:600,color:”#e2e8f0”},accumSub:{fontSize:11,color:”#64748b”,marginTop:2},
+accumBody:{padding:“12px 16px”},accumMain:{display:“flex”,alignItems:“baseline”,gap:8,marginBottom:12},
+accumAmount:{fontSize:30,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,letterSpacing:-1},accumTag:{fontSize:12,color:”#94a3b8”,fontWeight:500},
+accumBreakdown:{background:“rgba(255,255,255,0.03)”,borderRadius:10,padding:“8px 12px”},
+accumItem:{display:“flex”,justifyContent:“space-between”,padding:“5px 0”},accumItemL:{fontSize:12,color:”#94a3b8”},accumItemV:{fontSize:12,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:”#e2e8f0”},
+statRow:{display:“flex”,gap:10,marginBottom:10},
+statCard:{flex:1,background:”#111827”,borderRadius:14,padding:16,position:“relative”,overflow:“hidden”,border:“1px solid rgba(255,255,255,0.04)”},
+statLabel:{fontSize:11,color:”#64748b”,fontWeight:500,marginBottom:6,paddingLeft:12},statValue:{fontSize:17,fontWeight:700,fontFamily:”‘JetBrains Mono’,monospace”,color:”#e2e8f0”,paddingLeft:12},
+section:{background:”#111827”,borderRadius:16,padding:16,marginTop:10,border:“1px solid rgba(255,255,255,0.04)”},
+sectionHeader:{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:12},sectionTitle:{fontSize:16,fontWeight:600,color:”#e2e8f0”},
+seeAll:{background:“none”,border:“none”,color:”#34d399”,fontSize:13,fontWeight:500,cursor:“pointer”,fontFamily:”‘DM Sans’,sans-serif”},
+monthNav:{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:8,padding:“0 4px”},
+monthBtn:{background:“none”,border:“none”,cursor:“pointer”,padding:8,display:“flex”,alignItems:“center”},
+monthLabel:{background:“none”,border:“none”,color:”#e2e8f0”,fontSize:17,fontWeight:700,cursor:“pointer”,fontFamily:”‘DM Sans’,sans-serif”,letterSpacing:-0.3},
+calCard:{background:”#111827”,borderRadius:16,padding:“10px 6px”,border:“1px solid rgba(255,255,255,0.04)”},calRow:{display:“flex”},
+calDayHeader:{flex:1,textAlign:“center”,fontSize:10,fontWeight:600,color:”#475569”,padding:“4px 0 6px”,textTransform:“uppercase”,letterSpacing:0.5},
+calCell:{flex:1,display:“flex”,flexDirection:“column”,alignItems:“center”,justifyContent:“flex-start”,padding:“4px 1px”,minHeight:58,borderRadius:8,cursor:“pointer”,background:“none”,fontFamily:”‘DM Sans’,sans-serif”},
+billRow:{display:“flex”,alignItems:“center”,gap:10,padding:“8px 0”,borderBottom:“1px solid rgba(255,255,255,0.04)”},
+checkbox:{width:22,height:22,borderRadius:6,border:“2px solid #334155”,background:“transparent”,cursor:“pointer”,display:“flex”,alignItems:“center”,justifyContent:“center”,flexShrink:0,transition:“all 0.2s”},
+billName:{fontSize:14,fontWeight:500,color:”#e2e8f0”},billDate:{fontSize:11,color:”#64748b”,marginTop:2},billAmt:{fontSize:14,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:”#fbbf24”},
+expenseRow:{display:“flex”,justifyContent:“space-between”,alignItems:“center”,padding:“8px 0”,borderBottom:“1px solid rgba(255,255,255,0.04)”},
+expenseName:{fontSize:14,fontWeight:500,color:”#e2e8f0”},expenseDate:{fontSize:11,color:”#64748b”,marginTop:2},expenseAmt:{fontSize:14,fontWeight:600,fontFamily:”‘JetBrains Mono’,monospace”,color:”#fb923c”},
+addBtn:{background:“rgba(52,211,153,0.12)”,border:“none”,color:”#34d399”,fontSize:13,fontWeight:600,padding:“6px 14px”,borderRadius:8,cursor:“pointer”,fontFamily:”‘DM Sans’,sans-serif”},
+addForm:{display:“flex”,flexDirection:“column”,gap:10,marginBottom:14,padding:12,background:“rgba(255,255,255,0.03)”,borderRadius:12},
+input:{background:”#0a0f1a”,border:“1px solid #1e293b”,borderRadius:10,padding:“12px 14px”,color:”#e2e8f0”,fontSize:14,fontFamily:”‘DM Sans’,sans-serif”,width:“100%”},
+submitBtn:{background:“linear-gradient(135deg,#059669,#34d399)”,border:“none”,color:”#0a0f1a”,fontSize:15,fontWeight:700,padding:“14px”,borderRadius:12,cursor:“pointer”,fontFamily:”‘DM Sans’,sans-serif”},
+deleteBtn:{background:“none”,border:“none”,color:”#475569”,fontSize:13,cursor:“pointer”,padding:“4px 6px”},
+resetBtn:{background:“rgba(255,255,255,0.03)”,border:“none”,borderRadius:12,padding:“14px 16px”,cursor:“pointer”,width:“100%”,fontFamily:”‘DM Sans’,sans-serif”},
+tabBar:{position:“fixed”,bottom:0,left:“50%”,transform:“translateX(-50%)”,width:“100%”,maxWidth:420,display:“flex”,justifyContent:“space-around”,alignItems:“center”,padding:“8px 0 20px”,background:“linear-gradient(to top,#0a0f1a 80%,transparent)”,backdropFilter:“blur(20px)”,borderTop:“1px solid rgba(255,255,255,0.04)”},
+tab:{display:“flex”,flexDirection:“column”,alignItems:“center”,gap:0,background:“none”,border:“none”,cursor:“pointer”,fontFamily:”‘DM Sans’,sans-serif”,padding:“4px 12px”},
+};
