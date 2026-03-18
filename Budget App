@@ -1,0 +1,684 @@
+import { useState, useEffect } from “react”;
+
+const INITIAL_DATA = {
+payPeriodStart: “2026-03-06”,
+payPeriodEnd: “2026-03-19”,
+nextPayday: “2026-03-20”,
+incomes: [
+{ id: 1, name: “Paycheck”, amount: 2792.0, date: “2026-03-06” },
+],
+bills: [
+{ id: 1, name: “Rent”, amount: 850, dueDate: “2026-03-06”, paid: true },
+{ id: 2, name: “Car Insurance”, amount: 145, dueDate: “2026-03-10”, paid: true },
+{ id: 3, name: “Phone”, amount: 85, dueDate: “2026-03-11”, paid: false },
+{ id: 4, name: “Subscriptions”, amount: 42.5, dueDate: “2026-03-13”, paid: false },
+{ id: 5, name: “Internet”, amount: 65, dueDate: “2026-03-15”, paid: false },
+{ id: 6, name: “Electric”, amount: 110, dueDate: “2026-03-17”, paid: false },
+],
+expenses: [
+{ id: 1, name: “Groceries”, amount: 67.43, date: “2026-03-07” },
+{ id: 2, name: “Gas”, amount: 48.0, date: “2026-03-08” },
+{ id: 3, name: “Eating out”, amount: 32.15, date: “2026-03-09” },
+{ id: 4, name: “Coffee”, amount: 6.50, date: “2026-03-10” },
+{ id: 5, name: “Lunch”, amount: 14.20, date: “2026-03-11” },
+],
+};
+
+// ── Helpers ──
+
+function getDaysLeft(endDate) {
+const now = new Date();
+const end = new Date(endDate + “T23:59:59”);
+return Math.max(Math.ceil((end - now) / 86400000), 1);
+}
+function getDaysElapsed(startDate) {
+const start = new Date(startDate + “T00:00:00”);
+return Math.max(Math.floor((new Date() - start) / 86400000), 0);
+}
+function getTotalDays(s, e) {
+return Math.ceil((new Date(e + “T23:59:59”) - new Date(s + “T00:00:00”)) / 86400000) + 1;
+}
+function ds(d) { return d.toISOString().split(“T”)[0]; }
+function fmt$(n) { return Math.abs(n).toLocaleString(“en-US”, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtDate(str) { return new Date(str + “T12:00:00”).toLocaleDateString(“en-US”, { month: “short”, day: “numeric” }); }
+
+function useBudget(data) {
+const totalIncome = data.incomes.reduce((s, i) => s + i.amount, 0);
+const totalBills = data.bills.reduce((s, b) => s + b.amount, 0);
+const paidBills = data.bills.filter(b => b.paid).reduce((s, b) => s + b.amount, 0);
+const unpaidBills = totalBills - paidBills;
+const totalExp = data.expenses.reduce((s, e) => s + e.amount, 0);
+const leftover = totalIncome - totalBills - totalExp;
+const daysLeft = getDaysLeft(data.nextPayday);
+const elapsed = getDaysElapsed(data.payPeriodStart);
+const total = getTotalDays(data.payPeriodStart, data.nextPayday);
+const daily = leftover / daysLeft;
+const health = Math.min(Math.max(totalIncome > 0 ? leftover / totalIncome : 0, 0), 1);
+const accumBudget = daily * (elapsed + 1);
+const accumLeft = accumBudget - totalExp;
+return { totalIncome, totalBills, paidBills, unpaidBills, totalExp, leftover, daysLeft, elapsed, total, daily, health, accumBudget, accumLeft };
+}
+
+// ── Full Month Calendar ──
+
+function getMonthGrid(year, month) {
+const first = new Date(year, month, 1);
+const startDay = first.getDay();
+const daysInMonth = new Date(year, month + 1, 0).getDate();
+const prevDays = new Date(year, month, 0).getDate();
+const cells = [];
+for (let i = startDay - 1; i >= 0; i–) cells.push({ day: prevDays - i, inMonth: false, date: new Date(year, month - 1, prevDays - i) });
+for (let i = 1; i <= daysInMonth; i++) cells.push({ day: i, inMonth: true, date: new Date(year, month, i) });
+const remaining = 42 - cells.length;
+for (let i = 1; i <= remaining; i++) cells.push({ day: i, inMonth: false, date: new Date(year, month + 1, i) });
+const weeks = [];
+for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+return weeks;
+}
+
+function CalendarScreen({ data, setData }) {
+const today = new Date();
+const todayStr = ds(today);
+const [viewMonth, setViewMonth] = useState(today.getMonth());
+const [viewYear, setViewYear] = useState(today.getFullYear());
+const [selectedDate, setSelectedDate] = useState(todayStr);
+const [addType, setAddType] = useState(null); // “bill” | “expense” | “income” | null
+const [formName, setFormName] = useState(””);
+const [formAmount, setFormAmount] = useState(””);
+
+const weeks = getMonthGrid(viewYear, viewMonth);
+const monthLabel = new Date(viewYear, viewMonth).toLocaleDateString(“en-US”, { month: “long”, year: “numeric” });
+
+const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); };
+const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); };
+const goToday = () => { setViewMonth(today.getMonth()); setViewYear(today.getFullYear()); setSelectedDate(todayStr); };
+
+// Index bills, expenses, incomes by date
+const billsByDate = {};
+data.bills.forEach(b => { const d = b.dueDate; if (!billsByDate[d]) billsByDate[d] = []; billsByDate[d].push(b); });
+const expByDate = {};
+data.expenses.forEach(e => { const d = e.date; if (!expByDate[d]) expByDate[d] = []; expByDate[d].push(e); });
+const incByDate = {};
+data.incomes.forEach(i => { const d = i.date; if (!incByDate[d]) incByDate[d] = []; incByDate[d].push(i); });
+
+const selBills = billsByDate[selectedDate] || [];
+const selExps = expByDate[selectedDate] || [];
+const selIncs = incByDate[selectedDate] || [];
+const selSpend = selBills.reduce((s, b) => s + b.amount, 0) + selExps.reduce((s, e) => s + e.amount, 0);
+const selIncome = selIncs.reduce((s, i) => s + i.amount, 0);
+
+// Pay period highlight
+const ppStart = new Date(data.payPeriodStart + “T12:00:00”);
+const ppEnd = new Date(data.nextPayday + “T12:00:00”);
+
+const addItem = () => {
+if (!formName || !formAmount) return;
+const amt = parseFloat(formAmount);
+if (addType === “bill”) {
+setData(prev => ({ …prev, bills: […prev.bills, { id: Date.now(), name: formName, amount: amt, dueDate: selectedDate, paid: false }] }));
+} else if (addType === “expense”) {
+setData(prev => ({ …prev, expenses: […prev.expenses, { id: Date.now(), name: formName, amount: amt, date: selectedDate }] }));
+} else if (addType === “income”) {
+setData(prev => ({ …prev, incomes: […prev.incomes, { id: Date.now(), name: formName, amount: amt, date: selectedDate }] }));
+}
+setFormName(””); setFormAmount(””); setAddType(null);
+};
+
+return (
+<div style={S.screen}>
+{/* Month Nav */}
+<div style={S.monthNav}>
+<button style={S.monthBtn} onClick={prevMonth}>
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
+</button>
+<button style={S.monthLabel} onClick={goToday}>{monthLabel}</button>
+<button style={S.monthBtn} onClick={nextMonth}>
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 6 15 12 9 18" /></svg>
+</button>
+</div>
+
+```
+  {/* Calendar Grid */}
+  <div style={S.calCard}>
+    <div style={S.calRow}>
+      {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+        <div key={i} style={S.calDayHeader}>{d}</div>
+      ))}
+    </div>
+    {weeks.map((week, wi) => (
+      <div key={wi} style={S.calRow}>
+        {week.map((cell, ci) => {
+          const cellStr = ds(cell.date);
+          const isToday = cellStr === todayStr;
+          const isSel = cellStr === selectedDate;
+          const inPP = cell.date >= ppStart && cell.date <= ppEnd;
+          const hasBill = !!billsByDate[cellStr];
+          const hasExp = !!expByDate[cellStr];
+          const hasInc = !!incByDate[cellStr];
+          const cellSpend = (billsByDate[cellStr] || []).reduce((s, b) => s + b.amount, 0) + (expByDate[cellStr] || []).reduce((s, e) => s + e.amount, 0);
+          const cellInc = (incByDate[cellStr] || []).reduce((s, i) => s + i.amount, 0);
+
+          return (
+            <button key={ci} onClick={() => setSelectedDate(cellStr)} style={{
+              ...S.calCell,
+              opacity: cell.inMonth ? 1 : 0.2,
+              background: isSel ? "rgba(52,211,153,0.18)"
+                : isToday ? "rgba(129,140,248,0.12)"
+                : inPP ? "rgba(52,211,153,0.04)" : "transparent",
+              border: isSel ? "1.5px solid rgba(52,211,153,0.5)"
+                : isToday ? "1.5px solid rgba(129,140,248,0.4)"
+                : "1.5px solid transparent",
+            }}>
+              <span style={{
+                fontSize: 12, fontWeight: isToday ? 700 : 500,
+                color: isToday ? "#818cf8" : isSel ? "#34d399" : "#cbd5e1",
+                fontFamily: "'JetBrains Mono', monospace",
+              }}>{cell.day}</span>
+              {cellInc > 0 && (
+                <span style={{ fontSize: 8, fontWeight: 600, marginTop: 1, color: "#6ee7b7", fontFamily: "'JetBrains Mono', monospace" }}>
+                  +${cellInc >= 1000 ? (cellInc / 1000).toFixed(1) + "k" : Math.round(cellInc)}
+                </span>
+              )}
+              {cellSpend > 0 && (
+                <span style={{
+                  fontSize: 8, fontWeight: 600, marginTop: 0,
+                  color: hasBill ? "#fbbf24" : "#fb923c",
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}>-${cellSpend >= 1000 ? (cellSpend / 1000).toFixed(1) + "k" : Math.round(cellSpend)}</span>
+              )}
+              <div style={{ display: "flex", gap: 2, marginTop: 1, minHeight: 5 }}>
+                {hasInc && <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#6ee7b7" }} />}
+                {hasBill && <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#fbbf24" }} />}
+                {hasExp && <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#fb923c" }} />}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    ))}
+    {/* Legend */}
+    <div style={{ display: "flex", gap: 14, justifyContent: "center", padding: "6px 0 2px" }}>
+      {[["#6ee7b7", "Income"], ["#fbbf24", "Bill"], ["#fb923c", "Expense"], ["#818cf8", "Today"]].map(([c, l]) => (
+        <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: c }} />
+          <span style={{ fontSize: 9, color: "#64748b" }}>{l}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  {/* Selected Day Panel */}
+  <div style={{ ...S.section, marginTop: 10 }}>
+    <div style={S.sectionHeader}>
+      <div>
+        <h3 style={S.sectionTitle}>{fmtDate(selectedDate)}</h3>
+        {(() => {
+          const d = new Date(selectedDate + "T12:00:00");
+          const inPP = d >= ppStart && d <= ppEnd;
+          return inPP ? <span style={{ fontSize: 10, color: "#34d399", fontWeight: 500 }}>Current pay period</span> : null;
+        })()}
+      </div>
+      {selIncome > 0 && (
+        <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "#6ee7b7" }}>
+          +${fmt$(selIncome)}
+        </span>
+      )}
+      {selSpend > 0 && (
+        <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "#f87171" }}>
+          -${fmt$(selSpend)}
+        </span>
+      )}
+    </div>
+
+    {/* Add buttons */}
+    <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+      <button
+        style={{ ...S.addBtn, background: "rgba(110,231,183,0.12)", color: "#6ee7b7", ...(addType === "income" ? { background: "rgba(110,231,183,0.25)", color: "#6ee7b7" } : {}) }}
+        onClick={() => { setAddType(addType === "income" ? null : "income"); setFormName(""); setFormAmount(""); }}
+      >
+        {addType === "income" ? "✕ Cancel" : "+ Income"}
+      </button>
+      <button
+        style={{ ...S.addBtn, ...(addType === "bill" ? { background: "rgba(251,191,36,0.15)", color: "#fbbf24" } : {}) }}
+        onClick={() => { setAddType(addType === "bill" ? null : "bill"); setFormName(""); setFormAmount(""); }}
+      >
+        {addType === "bill" ? "✕ Cancel" : "+ Bill"}
+      </button>
+      <button
+        style={{ ...S.addBtn, ...(addType === "expense" ? { background: "rgba(251,146,60,0.15)", color: "#fb923c" } : {}) }}
+        onClick={() => { setAddType(addType === "expense" ? null : "expense"); setFormName(""); setFormAmount(""); }}
+      >
+        {addType === "expense" ? "✕ Cancel" : "+ Expense"}
+      </button>
+    </div>
+
+    {/* Add Form */}
+    {addType && (
+      <div style={S.addForm}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: addType === "income" ? "#6ee7b7" : addType === "bill" ? "#fbbf24" : "#fb923c" }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: addType === "income" ? "#6ee7b7" : addType === "bill" ? "#fbbf24" : "#fb923c" }}>
+            New {addType} for {fmtDate(selectedDate)}
+          </span>
+        </div>
+        <input style={S.input} placeholder={addType === "income" ? "Source (e.g. Paycheck)" : addType === "bill" ? "Bill name (e.g. Rent)" : "What was it?"} value={formName} onChange={e => setFormName(e.target.value)} />
+        <input style={S.input} placeholder="Amount" type="number" value={formAmount} onChange={e => setFormAmount(e.target.value)} />
+        <button style={{ ...S.submitBtn, background: addType === "income" ? "linear-gradient(135deg, #059669, #6ee7b7)" : addType === "bill" ? "linear-gradient(135deg, #b45309, #fbbf24)" : "linear-gradient(135deg, #c2410c, #fb923c)" }} onClick={addItem}>
+          Add {addType === "income" ? "Income" : addType === "bill" ? "Bill" : "Expense"}
+        </button>
+      </div>
+    )}
+
+    {/* Items list */}
+    {selBills.length === 0 && selExps.length === 0 && selIncs.length === 0 && !addType && (
+      <p style={{ color: "#334155", fontSize: 13, textAlign: "center", padding: "16px 0" }}>Nothing on this day</p>
+    )}
+
+    {selIncs.length > 0 && (
+      <div style={{ marginBottom: (selBills.length > 0 || selExps.length > 0) ? 8 : 0 }}>
+        <p style={{ fontSize: 11, fontWeight: 600, color: "#6ee7b7", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Income</p>
+        {selIncs.map(inc => (
+          <div key={inc.id} style={S.expenseRow}>
+            <p style={S.expenseName}>{inc.name}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ ...S.billAmt, color: "#6ee7b7" }}>+${fmt$(inc.amount)}</span>
+              <button style={S.deleteBtn} onClick={() => setData(prev => ({ ...prev, incomes: prev.incomes.filter(i => i.id !== inc.id) }))}>✕</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {selBills.length > 0 && (
+      <div style={{ marginBottom: selExps.length > 0 ? 8 : 0 }}>
+        <p style={{ fontSize: 11, fontWeight: 600, color: "#fbbf24", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Bills</p>
+        {selBills.map(bill => (
+          <div key={bill.id} style={S.billRow}>
+            <button onClick={() => setData(prev => ({ ...prev, bills: prev.bills.map(b => b.id === bill.id ? { ...b, paid: !b.paid } : b) }))}
+              style={{ ...S.checkbox, background: bill.paid ? "#34d399" : "transparent", borderColor: bill.paid ? "#34d399" : "#334155" }}>
+              {bill.paid && <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+            </button>
+            <div style={{ flex: 1 }}>
+              <p style={{ ...S.billName, textDecoration: bill.paid ? "line-through" : "none", opacity: bill.paid ? 0.5 : 1 }}>{bill.name}</p>
+            </div>
+            <span style={{ ...S.billAmt, opacity: bill.paid ? 0.5 : 1 }}>${fmt$(bill.amount)}</span>
+            <button style={S.deleteBtn} onClick={() => setData(prev => ({ ...prev, bills: prev.bills.filter(b => b.id !== bill.id) }))}>✕</button>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {selExps.length > 0 && (
+      <div>
+        <p style={{ fontSize: 11, fontWeight: 600, color: "#fb923c", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Expenses</p>
+        {selExps.map(exp => (
+          <div key={exp.id} style={S.expenseRow}>
+            <p style={S.expenseName}>{exp.name}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={S.expenseAmt}>-${fmt$(exp.amount)}</span>
+              <button style={S.deleteBtn} onClick={() => setData(prev => ({ ...prev, expenses: prev.expenses.filter(e => e.id !== exp.id) }))}>✕</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+
+  <div style={{ height: 100 }} />
+</div>
+```
+
+);
+}
+
+// ── Dashboard ──
+
+function DashboardScreen({ data, setData, setScreen }) {
+const c = useBudget(data);
+return (
+<div style={S.screen}>
+<div style={S.heroCard}>
+<div style={S.heroGlow} />
+<p style={S.heroLabel}>Projected leftover</p>
+<h1 style={{ …S.heroAmount, color: c.leftover >= 0 ? “#34d399” : “#f87171” }}>
+${fmt$(c.leftover)}{c.leftover < 0 && <span style={{ fontSize: 16, marginLeft: 4 }}>over</span>}
+</h1>
+<p style={S.heroSub}>after bills & expenses</p>
+<div style={S.healthBarOuter}>
+<div style={{ …S.healthBarInner, width: `${c.health * 100}%`, background: c.health > 0.3 ? “linear-gradient(90deg,#34d399,#6ee7b7)” : “linear-gradient(90deg,#f87171,#fca5a5)” }} />
+</div>
+<div style={S.heroStats}>
+<div style={S.heroStat}><span style={S.heroStatVal}>${fmt$(c.daily > 0 ? c.daily : 0)}</span><span style={S.heroStatLabel}>/ day safe</span></div>
+<div style={{ width: 1, height: 28, background: “rgba(255,255,255,0.15)” }} />
+<div style={S.heroStat}><span style={S.heroStatVal}>{c.daysLeft}</span><span style={S.heroStatLabel}>days left</span></div>
+</div>
+</div>
+
+```
+  {/* Accumulated */}
+  <div style={S.accumCard}>
+    <div style={S.accumHeader}><p style={S.accumLabel}>Spendable today</p><p style={S.accumSub}>Accumulated daily budget minus spending</p></div>
+    <div style={S.accumBody}>
+      <div style={S.accumMain}>
+        <span style={{ ...S.accumAmount, color: c.accumLeft >= 0 ? "#34d399" : "#f87171" }}>{c.accumLeft < 0 ? "-" : ""}${fmt$(c.accumLeft)}</span>
+        <span style={S.accumTag}>{c.accumLeft >= 0 ? "under budget" : "over budget"}</span>
+      </div>
+      <div style={S.accumBreakdown}>
+        <div style={S.accumItem}><span style={S.accumItemL}>Budget thru today</span><span style={S.accumItemV}>${fmt$(c.accumBudget)}</span></div>
+        <div style={S.accumItem}><span style={S.accumItemL}>Spent so far</span><span style={{ ...S.accumItemV, color: "#fb923c" }}>-${fmt$(c.totalExp)}</span></div>
+        <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "2px 0" }} />
+        <div style={S.accumItem}><span style={{ ...S.accumItemL, fontWeight: 600, color: "#cbd5e1" }}>Remaining</span><span style={{ ...S.accumItemV, fontWeight: 700, color: c.accumLeft >= 0 ? "#34d399" : "#f87171" }}>${fmt$(c.accumLeft)}</span></div>
+      </div>
+    </div>
+    <div style={{ padding: "0 16px 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontSize: 10, color: "#64748b" }}>Day {c.elapsed + 1} of {c.total}</span>
+        <span style={{ fontSize: 10, color: "#64748b" }}>{c.daysLeft} days left</span>
+      </div>
+      <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2 }}>
+        <div style={{ height: "100%", borderRadius: 2, width: `${((c.elapsed + 1) / c.total) * 100}%`, background: "linear-gradient(90deg,#818cf8,#a78bfa)" }} />
+      </div>
+    </div>
+  </div>
+
+  <div style={S.statRow}>
+    <StatCard label="Income" value={`$${fmt$(c.totalIncome)}`} accent="#6ee7b7" />
+    <StatCard label="Bills left" value={`$${fmt$(c.unpaidBills)}`} accent="#fbbf24" />
+  </div>
+  <div style={S.statRow}>
+    <StatCard label="Bills paid" value={`$${fmt$(c.paidBills)}`} accent="#818cf8" />
+    <StatCard label="Spent" value={`$${fmt$(c.totalExp)}`} accent="#fb923c" />
+  </div>
+
+  <div style={S.section}>
+    <div style={S.sectionHeader}>
+      <h3 style={S.sectionTitle}>Income</h3>
+      <button style={S.seeAll} onClick={() => setScreen("calendar")}>Manage →</button>
+    </div>
+    {data.incomes.length === 0 && <p style={{ color: "#334155", fontSize: 13, textAlign: "center", padding: "8px 0" }}>No income added</p>}
+    {data.incomes.map(inc => (
+      <div key={inc.id} style={S.expenseRow}>
+        <div><p style={S.expenseName}>{inc.name}</p><p style={S.expenseDate}>{fmtDate(inc.date)}</p></div>
+        <span style={{ fontSize: 14, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", color: "#6ee7b7" }}>+${fmt$(inc.amount)}</span>
+      </div>
+    ))}
+  </div>
+
+  <div style={S.section}>
+    <div style={S.sectionHeader}>
+      <h3 style={S.sectionTitle}>Upcoming Bills</h3>
+      <button style={S.seeAll} onClick={() => setScreen("calendar")}>Calendar →</button>
+    </div>
+    {data.bills.filter(b => !b.paid).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate)).slice(0, 4).map(bill => (
+      <BillRow key={bill.id} bill={bill} onToggle={() => setData(prev => ({ ...prev, bills: prev.bills.map(b => b.id === bill.id ? { ...b, paid: !b.paid } : b) }))} />
+    ))}
+    {data.bills.filter(b => !b.paid).length === 0 && <p style={{ color: "#334155", fontSize: 13, textAlign: "center", padding: "8px 0" }}>All paid!</p>}
+  </div>
+
+  <div style={S.section}>
+    <div style={S.sectionHeader}>
+      <h3 style={S.sectionTitle}>Recent Expenses</h3>
+      <button style={S.seeAll} onClick={() => setScreen("expenses")}>See all →</button>
+    </div>
+    {data.expenses.slice(-3).reverse().map(exp => (
+      <div key={exp.id} style={S.expenseRow}>
+        <div><p style={S.expenseName}>{exp.name}</p><p style={S.expenseDate}>{fmtDate(exp.date)}</p></div>
+        <p style={S.expenseAmt}>-${fmt$(exp.amount)}</p>
+      </div>
+    ))}
+  </div>
+  <div style={{ height: 100 }} />
+</div>
+```
+
+);
+}
+
+// ── Expenses Screen ──
+
+function ExpensesScreen({ data, setData }) {
+const [showAdd, setShowAdd] = useState(false);
+const [name, setName] = useState(””);
+const [amount, setAmount] = useState(””);
+
+const add = () => {
+if (!name || !amount) return;
+setData(prev => ({ …prev, expenses: […prev.expenses, { id: Date.now(), name, amount: parseFloat(amount), date: new Date().toISOString().split(“T”)[0] }] }));
+setName(””); setAmount(””); setShowAdd(false);
+};
+
+return (
+<div style={S.screen}>
+<div style={S.section}>
+<div style={S.sectionHeader}>
+<h3 style={{ …S.sectionTitle, marginBottom: 0 }}>All Expenses</h3>
+<button style={S.addBtn} onClick={() => setShowAdd(!showAdd)}>{showAdd ? “✕” : “+ Add”}</button>
+</div>
+{showAdd && (
+<div style={S.addForm}>
+<input style={S.input} placeholder=“What was it?” value={name} onChange={e => setName(e.target.value)} />
+<input style={S.input} placeholder=“Amount” type=“number” value={amount} onChange={e => setAmount(e.target.value)} />
+<button style={S.submitBtn} onClick={add}>Log Expense</button>
+</div>
+)}
+{data.expenses.slice().reverse().map(exp => (
+<div key={exp.id} style={S.expenseRow}>
+<div><p style={S.expenseName}>{exp.name}</p><p style={S.expenseDate}>{fmtDate(exp.date)}</p></div>
+<div style={{ display: “flex”, alignItems: “center”, gap: 12 }}>
+<p style={S.expenseAmt}>-${fmt$(exp.amount)}</p>
+<button style={S.deleteBtn} onClick={() => setData(prev => ({ …prev, expenses: prev.expenses.filter(e => e.id !== exp.id) }))}>✕</button>
+</div>
+</div>
+))}
+</div>
+<div style={{ height: 100 }} />
+</div>
+);
+}
+
+// ── Afford Screen ──
+
+function AffordScreen({ data }) {
+const [amount, setAmount] = useState(””);
+const [result, setResult] = useState(null);
+const c = useBudget(data);
+
+const check = () => {
+const p = parseFloat(amount);
+if (!p || p <= 0) return;
+const after = c.leftover - p;
+setResult({ ok: after >= 0, p, before: c.leftover, after, days: c.daysLeft, dBefore: c.daily, dAfter: after / c.daysLeft });
+};
+
+return (
+<div style={S.screen}>
+<div style={S.section}>
+<h3 style={{ …S.sectionTitle, marginBottom: 8 }}>Can I Afford It?</h3>
+<p style={{ color: “#94a3b8”, fontSize: 14, marginBottom: 20, lineHeight: 1.5 }}>Check if a purchase fits before payday.</p>
+<input style={{ …S.input, fontSize: 24, textAlign: “center”, padding: 16, fontWeight: 600 }} placeholder=”$0.00” type=“number” value={amount} onChange={e => { setAmount(e.target.value); setResult(null); }} />
+<button style={{ …S.submitBtn, marginTop: 12 }} onClick={check}>Check</button>
+</div>
+{result && (
+<div style={{ …S.section, marginTop: 16 }}>
+<div style={{ display: “flex”, alignItems: “center”, justifyContent: “center”, gap: 8, padding: “12px 20px”, borderRadius: 12, marginBottom: 20, background: result.ok ? “rgba(52,211,153,0.15)” : “rgba(248,113,113,0.15)” }}>
+<span style={{ fontSize: 20 }}>{result.ok ? “✓” : “✗”}</span>
+<span style={{ fontSize: 16, fontWeight: 600, color: result.ok ? “#34d399” : “#f87171” }}>{result.ok ? “Yes, you can afford it” : “Over budget”}</span>
+</div>
+<RRow label=“Purchase” value={`$${fmt$(result.p)}`} />
+<RRow label="Days left" value={result.days} />
+<div style={{ height: 1, background: “rgba(255,255,255,0.06)”, margin: “8px 0” }} />
+<RRow label=“Spendable before” value={`$${fmt$(result.before)}`} />
+<RRow label=“Spendable after” value={`$${fmt$(result.after)}`} hl={!result.ok} />
+<div style={{ height: 1, background: “rgba(255,255,255,0.06)”, margin: “8px 0” }} />
+<RRow label=“Daily before” value={`$${fmt$(result.dBefore)}/day`} />
+<RRow label=“Daily after” value={`$${fmt$(result.dAfter > 0 ? result.dAfter : 0)}/day`} hl={!result.ok} />
+</div>
+)}
+<div style={{ height: 100 }} />
+</div>
+);
+}
+
+// ── Shared Components ──
+
+function StatCard({ label, value, accent }) {
+return (
+<div style={S.statCard}>
+<div style={{ width: 4, height: 28, borderRadius: 2, background: accent, position: “absolute”, left: 0, top: 16 }} />
+<p style={S.statLabel}>{label}</p><p style={S.statValue}>{value}</p>
+</div>
+);
+}
+
+function BillRow({ bill, onToggle }) {
+return (
+<div style={S.billRow}>
+<button onClick={onToggle} style={{ …S.checkbox, background: bill.paid ? “#34d399” : “transparent”, borderColor: bill.paid ? “#34d399” : “#334155” }}>
+{bill.paid && <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+</button>
+<div style={{ flex: 1 }}>
+<p style={{ …S.billName, textDecoration: bill.paid ? “line-through” : “none”, opacity: bill.paid ? 0.5 : 1 }}>{bill.name}</p>
+<p style={S.billDate}>Due {fmtDate(bill.dueDate)}</p>
+</div>
+<p style={{ …S.billAmt, opacity: bill.paid ? 0.5 : 1 }}>${fmt$(bill.amount)}</p>
+</div>
+);
+}
+
+function RRow({ label, value, hl }) {
+return (
+<div style={{ display: “flex”, justifyContent: “space-between”, padding: “8px 0” }}>
+<span style={{ color: “#94a3b8”, fontSize: 14 }}>{label}</span>
+<span style={{ color: hl ? “#f87171” : “#e2e8f0”, fontSize: 14, fontWeight: 600 }}>{value}</span>
+</div>
+);
+}
+
+// ── Icons ──
+function HomeIcon({ a }) { return (<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a ? “#34d399” : “#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>); }
+function CalIcon({ a }) { return (<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a ? “#34d399” : “#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /><rect x="7" y="14" width="3" height="3" rx="0.5" /></svg>); }
+function ExpIcon({ a }) { return (<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a ? “#34d399” : “#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>); }
+function CalcIcon({ a }) { return (<svg width=“22” height=“22” viewBox=“0 0 24 24” fill=“none” stroke={a ? “#34d399” : “#64748b”} strokeWidth=“2” strokeLinecap=“round” strokeLinejoin=“round”><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>); }
+
+// ── Main App ──
+
+export default function PaycheckBudget() {
+const [screen, setScreen] = useState(“home”);
+const [data, setData] = useState(INITIAL_DATA);
+const titles = { home: “Dashboard”, calendar: “Calendar”, expenses: “Expenses”, afford: “Afford Check” };
+
+return (
+<div style={S.device}>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap'); * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; } input:focus { outline: none; } input[type="date"] { color-scheme: dark; } ::-webkit-scrollbar { display: none; }`}</style>
+
+```
+  <div style={S.statusBar}>
+    <span style={S.statusTime}>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+    <span style={S.payPeriod}>{fmtDate(data.payPeriodStart)} – {fmtDate(data.nextPayday)}</span>
+  </div>
+  <div style={S.header}><h2 style={S.headerTitle}>{titles[screen]}</h2></div>
+
+  <div style={S.content}>
+    {screen === "home" && <DashboardScreen data={data} setData={setData} setScreen={setScreen} />}
+    {screen === "calendar" && <CalendarScreen data={data} setData={setData} />}
+    {screen === "expenses" && <ExpensesScreen data={data} setData={setData} />}
+    {screen === "afford" && <AffordScreen data={data} />}
+  </div>
+
+  <div style={S.tabBar}>
+    {[
+      { key: "home", label: "Home", Icon: HomeIcon },
+      { key: "calendar", label: "Calendar", Icon: CalIcon },
+      { key: "expenses", label: "Expenses", Icon: ExpIcon },
+      { key: "afford", label: "Afford?", Icon: CalcIcon },
+    ].map(({ key, label, Icon }) => (
+      <button key={key} style={{ ...S.tab, color: screen === key ? "#34d399" : "#64748b" }} onClick={() => setScreen(key)}>
+        <Icon a={screen === key} />
+        <span style={{ fontSize: 10, marginTop: 2, fontWeight: screen === key ? 600 : 400 }}>{label}</span>
+      </button>
+    ))}
+  </div>
+</div>
+```
+
+);
+}
+
+// ── Styles ──
+
+const S = {
+device: { maxWidth: 420, margin: “0 auto”, minHeight: “100vh”, background: “#0a0f1a”, fontFamily: “‘DM Sans’, sans-serif”, color: “#e2e8f0”, position: “relative”, overflow: “hidden” },
+statusBar: { display: “flex”, justifyContent: “space-between”, alignItems: “center”, padding: “12px 20px 4px”, fontSize: 12, color: “#64748b” },
+statusTime: { fontFamily: “‘JetBrains Mono’, monospace”, fontWeight: 500 },
+payPeriod: { fontWeight: 500, letterSpacing: 0.3 },
+header: { padding: “8px 20px 12px” },
+headerTitle: { fontSize: 26, fontWeight: 700, letterSpacing: -0.5, color: “#f1f5f9” },
+content: { overflowY: “auto”, height: “calc(100vh - 130px)”, paddingBottom: 20 },
+screen: { padding: “0 16px” },
+
+heroCard: { position: “relative”, background: “linear-gradient(145deg,#111827,#1e293b)”, borderRadius: 20, padding: “28px 24px 20px”, marginBottom: 12, overflow: “hidden”, border: “1px solid rgba(52,211,153,0.1)” },
+heroGlow: { position: “absolute”, top: -40, right: -40, width: 120, height: 120, borderRadius: “50%”, background: “radial-gradient(circle,rgba(52,211,153,0.15),transparent 70%)” },
+heroLabel: { fontSize: 13, color: “#94a3b8”, fontWeight: 500, marginBottom: 4 },
+heroAmount: { fontSize: 44, fontWeight: 700, fontFamily: “‘JetBrains Mono’, monospace”, letterSpacing: -2, margin: “4px 0 2px” },
+heroSub: { fontSize: 12, color: “#64748b”, marginBottom: 16 },
+healthBarOuter: { height: 4, background: “rgba(255,255,255,0.06)”, borderRadius: 2, marginBottom: 18 },
+healthBarInner: { height: “100%”, borderRadius: 2, transition: “width 0.6s ease” },
+heroStats: { display: “flex”, justifyContent: “center”, alignItems: “center”, gap: 28 },
+heroStat: { display: “flex”, flexDirection: “column”, alignItems: “center” },
+heroStatVal: { fontSize: 18, fontWeight: 700, fontFamily: “‘JetBrains Mono’, monospace”, color: “#f1f5f9” },
+heroStatLabel: { fontSize: 11, color: “#64748b”, marginTop: 2 },
+
+accumCard: { background: “#111827”, borderRadius: 16, marginBottom: 12, overflow: “hidden”, border: “1px solid rgba(129,140,248,0.12)” },
+accumHeader: { padding: “14px 16px 0” },
+accumLabel: { fontSize: 14, fontWeight: 600, color: “#e2e8f0” },
+accumSub: { fontSize: 11, color: “#64748b”, marginTop: 2 },
+accumBody: { padding: “12px 16px” },
+accumMain: { display: “flex”, alignItems: “baseline”, gap: 8, marginBottom: 12 },
+accumAmount: { fontSize: 30, fontWeight: 700, fontFamily: “‘JetBrains Mono’, monospace”, letterSpacing: -1 },
+accumTag: { fontSize: 12, color: “#94a3b8”, fontWeight: 500 },
+accumBreakdown: { background: “rgba(255,255,255,0.03)”, borderRadius: 10, padding: “8px 12px” },
+accumItem: { display: “flex”, justifyContent: “space-between”, padding: “5px 0” },
+accumItemL: { fontSize: 12, color: “#94a3b8” },
+accumItemV: { fontSize: 12, fontWeight: 600, fontFamily: “‘JetBrains Mono’, monospace”, color: “#e2e8f0” },
+
+statRow: { display: “flex”, gap: 10, marginBottom: 10 },
+statCard: { flex: 1, background: “#111827”, borderRadius: 14, padding: 16, position: “relative”, overflow: “hidden”, border: “1px solid rgba(255,255,255,0.04)” },
+statLabel: { fontSize: 11, color: “#64748b”, fontWeight: 500, marginBottom: 6, paddingLeft: 12 },
+statValue: { fontSize: 17, fontWeight: 700, fontFamily: “‘JetBrains Mono’, monospace”, color: “#e2e8f0”, paddingLeft: 12 },
+
+section: { background: “#111827”, borderRadius: 16, padding: 16, marginTop: 10, border: “1px solid rgba(255,255,255,0.04)” },
+sectionHeader: { display: “flex”, justifyContent: “space-between”, alignItems: “center”, marginBottom: 12 },
+sectionTitle: { fontSize: 16, fontWeight: 600, color: “#e2e8f0” },
+seeAll: { background: “none”, border: “none”, color: “#34d399”, fontSize: 13, fontWeight: 500, cursor: “pointer”, fontFamily: “‘DM Sans’, sans-serif” },
+
+// Month nav
+monthNav: { display: “flex”, justifyContent: “space-between”, alignItems: “center”, marginBottom: 8, padding: “0 4px” },
+monthBtn: { background: “none”, border: “none”, cursor: “pointer”, padding: 8, display: “flex”, alignItems: “center” },
+monthLabel: { background: “none”, border: “none”, color: “#e2e8f0”, fontSize: 17, fontWeight: 700, cursor: “pointer”, fontFamily: “‘DM Sans’, sans-serif”, letterSpacing: -0.3 },
+
+// Calendar
+calCard: { background: “#111827”, borderRadius: 16, padding: “10px 6px”, border: “1px solid rgba(255,255,255,0.04)” },
+calRow: { display: “flex” },
+calDayHeader: { flex: 1, textAlign: “center”, fontSize: 10, fontWeight: 600, color: “#475569”, padding: “4px 0 6px”, textTransform: “uppercase”, letterSpacing: 0.5 },
+calCell: { flex: 1, display: “flex”, flexDirection: “column”, alignItems: “center”, justifyContent: “flex-start”, padding: “4px 1px”, minHeight: 58, borderRadius: 8, cursor: “pointer”, background: “none”, fontFamily: “‘DM Sans’, sans-serif” },
+
+billRow: { display: “flex”, alignItems: “center”, gap: 10, padding: “8px 0”, borderBottom: “1px solid rgba(255,255,255,0.04)” },
+checkbox: { width: 22, height: 22, borderRadius: 6, border: “2px solid #334155”, background: “transparent”, cursor: “pointer”, display: “flex”, alignItems: “center”, justifyContent: “center”, flexShrink: 0, transition: “all 0.2s” },
+billName: { fontSize: 14, fontWeight: 500, color: “#e2e8f0” },
+billDate: { fontSize: 11, color: “#64748b”, marginTop: 2 },
+billAmt: { fontSize: 14, fontWeight: 600, fontFamily: “‘JetBrains Mono’, monospace”, color: “#fbbf24” },
+
+expenseRow: { display: “flex”, justifyContent: “space-between”, alignItems: “center”, padding: “8px 0”, borderBottom: “1px solid rgba(255,255,255,0.04)” },
+expenseName: { fontSize: 14, fontWeight: 500, color: “#e2e8f0” },
+expenseDate: { fontSize: 11, color: “#64748b”, marginTop: 2 },
+expenseAmt: { fontSize: 14, fontWeight: 600, fontFamily: “‘JetBrains Mono’, monospace”, color: “#fb923c” },
+
+addBtn: { background: “rgba(52,211,153,0.12)”, border: “none”, color: “#34d399”, fontSize: 13, fontWeight: 600, padding: “6px 14px”, borderRadius: 8, cursor: “pointer”, fontFamily: “‘DM Sans’, sans-serif” },
+addForm: { display: “flex”, flexDirection: “column”, gap: 10, marginBottom: 14, padding: 12, background: “rgba(255,255,255,0.03)”, borderRadius: 12 },
+input: { background: “#0a0f1a”, border: “1px solid #1e293b”, borderRadius: 10, padding: “12px 14px”, color: “#e2e8f0”, fontSize: 14, fontFamily: “‘DM Sans’, sans-serif” },
+submitBtn: { background: “linear-gradient(135deg,#059669,#34d399)”, border: “none”, color: “#0a0f1a”, fontSize: 15, fontWeight: 700, padding: “14px”, borderRadius: 12, cursor: “pointer”, fontFamily: “‘DM Sans’, sans-serif” },
+deleteBtn: { background: “none”, border: “none”, color: “#475569”, fontSize: 13, cursor: “pointer”, padding: “4px 6px” },
+
+tabBar: { position: “fixed”, bottom: 0, left: “50%”, transform: “translateX(-50%)”, width: “100%”, maxWidth: 420, display: “flex”, justifyContent: “space-around”, alignItems: “center”, padding: “8px 0 20px”, background: “linear-gradient(to top,#0a0f1a 80%,transparent)”, backdropFilter: “blur(20px)”, borderTop: “1px solid rgba(255,255,255,0.04)” },
+tab: { display: “flex”, flexDirection: “column”, alignItems: “center”, gap: 0, background: “none”, border: “none”, cursor: “pointer”, fontFamily: “‘DM Sans’, sans-serif”, padding: “4px 12px” },
+};
