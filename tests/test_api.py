@@ -1,12 +1,20 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from main import app, reset_store
+from main import DB_PATH, app, init_db, reset_db
 
 client = TestClient(app)
 
 
 def setup_function() -> None:
-    reset_store()
+    init_db()
+    reset_db()
+
+
+def teardown_module() -> None:
+    if Path(DB_PATH).exists():
+        Path(DB_PATH).unlink()
 
 
 def test_health() -> None:
