@@ -39,11 +39,9 @@ pytest -q
 
 ## Persistence
 
-- Data is stored in a SQLite database file (default: `items.db` locally).
-- Tests automatically clear the table and remove the DB file after execution.
-
-- On Vercel, the app stores SQLite data in `/tmp/items.db` (ephemeral per deployment instance).
-- You can override DB location with `ITEMS_DB_PATH`.
+- The app uses `DATABASE_URL` and supports PostgreSQL for production.
+- If `DATABASE_URL` is not set, it falls back to SQLite (`items.db` locally, `/tmp/items.db` on Vercel).
+- For Postgres URLs, `postgres://` and `postgresql://` are normalized automatically.
 
 Interactive docs are available at `http://127.0.0.1:8000/docs`.
 
