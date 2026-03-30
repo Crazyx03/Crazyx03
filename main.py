@@ -1,14 +1,14 @@
 from typing import Dict
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-app = FastAPI(title="Example Items API", version="1.0.0")
+app = FastAPI(title="Example Items API", version="1.1.0")
 
 
 class ItemCreate(BaseModel):
-    name: str
-    price: float
+    name: str = Field(min_length=1, max_length=100)
+    price: float = Field(gt=0)
 
 
 class Item(ItemCreate):
@@ -18,6 +18,13 @@ class Item(ItemCreate):
 # In-memory store for demo purposes.
 db: Dict[int, Item] = {}
 next_id = 1
+
+
+def reset_store() -> None:
+    """Reset in-memory state. Used by tests."""
+    global next_id
+    db.clear()
+    next_id = 1
 
 
 @app.get("/health")
