@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 
@@ -67,6 +68,7 @@ def root() -> dict[str, str]:
         "message": "Items API is running",
         "health": "/health",
         "docs": "/docs",
+        "app": "/app",
         "db_path": str(DB_PATH),
     }
 
@@ -75,6 +77,10 @@ def root() -> dict[str, str]:
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
+
+@app.get("/app", response_class=HTMLResponse)
+def app_ui() -> str:
+    return Path("templates/app.html").read_text(encoding="utf-8")
 
 @app.post("/items", response_model=Item, status_code=201)
 def create_item(payload: ItemCreate) -> Item:

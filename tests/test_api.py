@@ -23,6 +23,12 @@ def test_root() -> None:
     assert response.json()["health"] == "/health"
 
 
+def test_app_ui() -> None:
+    response = client.get("/app")
+    assert response.status_code == 200
+    assert "Items App" in response.text
+
+
 def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200

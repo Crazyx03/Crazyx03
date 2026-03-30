@@ -25,6 +25,7 @@ pytest -q
 ## Endpoints
 
 - `GET /health`
+- `GET /app` (simple web UI)
 - `POST /items`
 - `GET /items`
 - `GET /items/{item_id}`
