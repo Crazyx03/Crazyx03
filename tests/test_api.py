@@ -17,6 +17,12 @@ def teardown_module() -> None:
         Path(DB_PATH).unlink()
 
 
+def test_root() -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json()["health"] == "/health"
+
+
 def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200

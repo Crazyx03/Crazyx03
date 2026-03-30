@@ -48,6 +48,11 @@ def on_startup() -> None:
     init_db()
 
 
+@app.get("/")
+def root() -> dict[str, str]:
+    return {"message": "Items API is running", "health": "/health", "docs": "/docs"}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
