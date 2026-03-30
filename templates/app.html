@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Items App</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+      h1 { margin-bottom: .5rem; }
+      form { display: grid; grid-template-columns: 1fr 1fr auto; gap: .5rem; margin: 1rem 0; }
+      input, button { padding: .5rem; }
+      ul { list-style: none; padding: 0; }
+      li { display: flex; justify-content: space-between; align-items: center; padding: .5rem 0; border-bottom: 1px solid #ddd; }
+      .muted { color: #666; font-size: .9rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Items App</h1>
+    <p class="muted">Simple frontend connected to the FastAPI backend.</p>
+
+    <form id="item-form">
+      <input id="name" placeholder="Item name" required maxlength="100" />
+      <input id="price" placeholder="Price" type="number" min="0.01" step="0.01" required />
+      <button type="submit">Add</button>
+    </form>
+
+    <ul id="items"></ul>
+
+    <script>
+      const itemsList = document.getElementById('items');
+      const form = document.getElementById('item-form');
+      const nameInput = document.getElementById('name');
+      const priceInput = document.getElementById('price');
+
+      async function loadItems() {
+        const res = await fetch('/items');
+        const items = await res.json();
+        itemsList.innerHTML = '';
+
+        for (const item of items) {
+          const li = document.createElement('li');
+          li.innerHTML = `<span>#${item.id} ${item.name} - $${Number(item.price).toFixed(2)}</span>`;
+
+          const del = document.createElement('button');
+          del.textContent = 'Delete';
+          del.onclick = async () => {
+            await fetch(`/items/${item.id}`, { method: 'DELETE' });
+            await loadItems();
+          };
+
+          li.appendChild(del);
+          itemsList.appendChild(li);
+        }
+      }
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await fetch('/items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: nameInput.value,
+            price: Number(priceInput.value)
+          })
+        });
+        form.reset();
+        await loadItems();
+      });
+
+      loadItems();
+    </script>
+  </body>
+</html>
